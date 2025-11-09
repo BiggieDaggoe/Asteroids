@@ -65,25 +65,77 @@ updateBullets dt gstate = gstate { gsBullets = newBullets }
 
 -- | Update all enemies
 updateEnemies :: Float -> GameState -> GameState
-updateEnemies dt gstate = gstate { gsEnemies = newEnemies }
+updateEnemies dt gstate = gstate 
+  { gsEnemies = remainingEnemies ++ respawnedMartians
+  , gsBullets = gsBullets gstate ++ newBullets
+  , gsNextId = gsNextId gstate + EntityId (length newBullets)
+  }
   where
     enemies = gsEnemies gstate
-    newEnemies = map (moveEnemy dt) enemies
+    movedEnemies = map (moveEnemy dt) enemies
+    
+    -- Split enemies into those on screen and those that escaped
+    (remainingEnemies, escapedEnemies) = partition isOnScreen movedEnemies
+    
+    -- Respawn escaped Martians at the top of the screen
+    respawnedMartians = map respawnEnemy $ filter (\e -> eType e == Martian) escapedEnemies
+    
+    -- Generate UFO bullets aimed at player
+    playerPos = pPos $ gsPlayer gstate
+    nextId = gsNextId gstate
+    newBullets = concat [maybeShootUFO e (nextId + EntityId idx) playerPos | (e, idx) <- zip remainingEnemies [0..]]
     
     moveEnemy dt' enemy = enemy
       { ePos = addVec (ePos enemy) (scaleVec dt' (eVel enemy))
       }
+    
+    respawnEnemy enemy = enemy
+      { ePos = (fst (ePos enemy), screenHeight/2 + 30)  -- Keep same X position, move to top
+      }
+    
+    isOnScreen enemy = let (_, y) = ePos enemy
+                      in y > -screenHeight/2 - 50
+    
+    -- UFO shooting logic
+    maybeShootUFO enemy bulletId targetPos
+      | eType enemy /= UFO = []  -- Only UFOs shoot
+      | otherwise = 
+          let chance = sin (gsTimeElapsed gstate * 2) * 0.5 + 0.5  -- Smooth shooting pattern
+              shootThisFrame = chance > 0.95  -- ~5% chance to shoot each frame
+              (ex, ey) = ePos enemy
+              (px, py) = targetPos
+              -- Calculate direction vector to player
+              dx = px - ex
+              dy = py - ey
+              -- Normalize the vector and scale by bullet speed
+              len = sqrt (dx * dx + dy * dy)
+              bulletVel = if len == 0 
+                         then (0, -200)  -- Default downward if directly above/below
+                         else (dx / len * 200, dy / len * 200)
+          in if shootThisFrame 
+             then [Bullet
+                    { bId = bulletId
+                    , bPos = ePos enemy
+                    , bVel = bulletVel
+                    , bOwner = FromEnemy (eId enemy)  -- Use enemy's ID
+                    , bDamage = 1
+                    }]
+             else []
 
 -- | Update all asteroids
 updateAsteroids :: Float -> GameState -> GameState
 updateAsteroids dt gstate = gstate { gsAsteroids = newAsteroids }
   where
     asteroids = gsAsteroids gstate
-    newAsteroids = map (moveAsteroid dt) asteroids
+    movedAsteroids = map (moveAsteroid dt) asteroids
+    newAsteroids = filter isOnScreen movedAsteroids
     
     moveAsteroid dt' asteroid = asteroid
-      { aPos = wrapPosition (addVec (aPos asteroid) (scaleVec dt' (aVel asteroid)))
+      { aPos = wrapHorizontal (addVec (aPos asteroid) (scaleVec dt' (aVel asteroid)))
       }
+    
+    isOnScreen asteroid = let (_, y) = aPos asteroid
+                         in y > -screenHeight/2 - 50
 
 -- | Update pickups (move and check TTL)
 updatePickups :: Float -> GameState -> GameState
@@ -150,12 +202,19 @@ processCollisions (b:bs) enemies survivingBullets pickups gen score kills instaK
       let damage = if instaKill then 1000 else bDamage b
           newHealth = eHealth hitEnemy - damage
           damagedEnemy = hitEnemy { eHealth = newHealth }
-          (pickup, gen') = maybeSpawnPickup (ePos hitEnemy) gen
+          -- Always spawn pickup on hit for Martians, only on death for others
+          (pickup, gen') = if eType hitEnemy == Martian
+                          then maybeSpawnPickup (ePos hitEnemy) gen
+                          else if newHealth <= 0
+                               then maybeSpawnPickup (ePos hitEnemy) gen
+                               else (Nothing, gen)
           newPickups = maybe pickups (:pickups) pickup
           (newScore, newKills) = if newHealth <= 0
                                  then (score + enemyScore (eType hitEnemy), kills + 1)
                                  else (score, kills)
-          updatedEnemies = damagedEnemy : otherEnemies
+          updatedEnemies = if newHealth <= 0 
+                          then otherEnemies  -- Remove dead enemies
+                          else damagedEnemy : otherEnemies
       in processCollisions bs updatedEnemies survivingBullets newPickups gen' newScore newKills instaKill
 
 -- | Find collision between bullet and enemies
@@ -315,7 +374,7 @@ updateWaveSpawning dt gstate = gstate
 -- | Check if wave is complete
 checkWaveCompletion :: GameState -> GameState
 checkWaveCompletion gstate
-  | killsThisWave wave >= killsRequired wave && null (gsEnemies gstate) = gstate
+  | killsThisWave wave >= killsRequired wave = gstate  -- Remove the null check to progress waves
       { gsWave = nextWave
       }
   | otherwise = gstate
@@ -327,7 +386,7 @@ checkWaveCompletion gstate
       , killsThisWave = 0
       , killsRequired = 5 + wNum * 2
       , spawnCooldown = max 0.5 (2.0 - fromIntegral wNum * 0.1)
-      , spawnTimer = 1.0
+      , spawnTimer = 0.0  -- Start spawning immediately in new wave
       , maxEnemies = min 10 (3 + wNum)
       }
 
@@ -355,20 +414,38 @@ checkGameOver gstate
 spawnRandomEnemy :: EntityId -> StdGen -> Int -> (Enemy, StdGen)
 spawnRandomEnemy eid gen wave =
   let (x, gen') = randomR (-screenWidth/2 + 50, screenWidth/2 - 50) gen
-      (typeIdx, gen'') = randomR (0, min 2 wave `div` 3) gen'
-      enemyType = toEnum typeIdx :: EnemyType
-      health = case enemyType of
-        Alien -> 1
-        Martian -> 2
-        UFO -> 3
+      -- Higher waves increase chance of stronger enemies
+      (typeRoll, gen'') = randomR (0, 100) gen' :: (Int, StdGen)
+      -- Enemy type selection based on wave and random roll
+      enemyType = selectEnemyType wave typeRoll
+      -- Each type has unique health and movement
+      (vx, gen''') = randomR (-50, 50) gen''  -- For horizontal movement
+      baseSpeed = enemySpeed + fromIntegral wave * 5
+      (health, vel) = case enemyType of
+        Alien -> (1, (0, -baseSpeed * 1.2))  -- Fast but weak
+        Martian -> (2, (0, -baseSpeed))      -- Standard
+        UFO -> (3, (vx, -baseSpeed * 0.8))   -- Tough, moves horizontally
       enemy = Enemy
         { eId = eid
         , ePos = (x, screenHeight/2 + 30)
-        , eVel = (0, -enemySpeed - fromIntegral wave * 5)
+        , eVel = vel
         , eHealth = health
         , eType = enemyType
         }
-  in (enemy, gen'')
+  in (enemy, gen''')
+  where
+    selectEnemyType :: Int -> Int -> EnemyType
+    selectEnemyType waveNum roll
+      | waveNum <= 2 = Alien                            -- Waves 1-2: Only Aliens
+      | waveNum <= 4 = if roll < 70 then Alien else Martian  -- Waves 3-4: Mostly Aliens, some Martians
+      | waveNum <= 6 = case roll of                     -- Waves 5-6: Mix of all three
+          r | r < 50 -> Alien
+            | r < 80 -> Martian
+            | otherwise -> UFO
+      | otherwise = case roll of                        -- Wave 7+: More tough enemies
+          r | r < 30 -> Alien
+            | r < 70 -> Martian
+            | otherwise -> UFO
 
 -- | Spawn random asteroid
 spawnRandomAsteroid :: EntityId -> StdGen -> Int -> (Asteroid, StdGen)
@@ -429,12 +506,10 @@ rotateVec deg (x, y) =
 clamp :: Float -> Float -> Float -> Float
 clamp minVal maxVal = max minVal . min maxVal
 
-wrapPosition :: Vec -> Vec
-wrapPosition (x, y)
+wrapHorizontal :: Vec -> Vec
+wrapHorizontal (x, y)
   | x < -screenWidth/2 = (screenWidth/2, y)
   | x > screenWidth/2 = (-screenWidth/2, y)
-  | y < -screenHeight/2 = (x, screenHeight/2)
-  | y > screenHeight/2 = (x, -screenHeight/2)
   | otherwise = (x, y)
 
 asteroidRadius :: AsteroidSize -> Float
@@ -467,8 +542,11 @@ handleMenuInput _ gstate = gstate
 -- | Start a new game
 startNewGame :: GameState -> GameState
 startNewGame gstate = initialState
-  { gsGameMode = Playing
-  , gsHighScores = gsHighScores gstate
+  { gsGameMode = Playing  -- Set to Playing mode
+  , gsHighScores = gsHighScores gstate  -- Keep high scores
+  , gsGameOver = False  -- Ensure game over is reset
+  , gsPaused = False  -- Ensure game isn't paused
+  , gsRandGen = gsRandGen gstate  -- Keep random generator state
   }
 
 -- | Handle name entry input (IO-capable)
@@ -505,18 +583,18 @@ handleNameInputIO _ gstate = return gstate
 
 -- | Handle game over input
 handleGameOverInput :: Event -> GameState -> IO GameState
-handleGameOverInput (EventKey (Char 'r') Down _ _) gstate = do
-  return $ startNewGame gstate
-handleGameOverInput (EventKey (Char 'm') Down _ _) gstate = do
-  return $ gstate { gsGameMode = Menu }
-handleGameOverInput (EventKey (Char 's') Down _ _) gstate = do
-  if qualifiesForHighScore (gsScore gstate) (gsHighScores gstate)
-    then return $ gstate { gsGameMode = EnteringName, gsPlayerName = "" }
-    else return gstate
-handleGameOverInput (EventKey (SpecialKey KeyEnter) Down _ _) gstate = do
-  if not (null (gsPlayerName gstate)) && gsGameMode gstate == EnteringName
-    then saveHighScore gstate
-    else return gstate
+handleGameOverInput (EventKey key Down _ _) gstate = case key of
+  Char 'r' -> do
+    let newState = startNewGame gstate
+    return $ newState { gsGameMode = Playing }  -- Explicitly set mode to Playing
+  Char 'm' -> return $ gstate { gsGameMode = Menu }
+  Char 's' -> if qualifiesForHighScore (gsScore gstate) (gsHighScores gstate)
+              then return $ gstate { gsGameMode = EnteringName, gsPlayerName = "" }
+              else return gstate
+  SpecialKey KeyEnter -> if not (null (gsPlayerName gstate)) && gsGameMode gstate == EnteringName
+                        then saveHighScore gstate
+                        else return gstate
+  _ -> return gstate
 handleGameOverInput _ gstate = return gstate
 
 -- | Handle playing input
@@ -542,6 +620,7 @@ handlePlayingInput (EventKey key keyState _ _) gstate = case (key, keyState) of
     
     -- Any other key
     _ -> gstate
+handlePlayingInput _ gstate = gstate  -- Handle all non-EventKey events
 
 -- | Check if score qualifies for top 10
 qualifiesForHighScore :: Int -> [HighScore] -> Bool

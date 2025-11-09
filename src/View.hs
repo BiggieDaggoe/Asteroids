@@ -47,16 +47,26 @@ renderMenu gstate = pictures
 
 -- | Render controls on menu
 renderControls' :: Float -> Picture
-renderControls' yOffset = translate (-150) (yOffset - 100) $ pictures
+renderControls' yOffset = translate (-150) (yOffset - 100) $ pictures $
   [ color white $ scale 0.2 0.2 $ text "CONTROLS:"
   , translate 0 (-30) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "Arrow Keys or A/D - Move"
   , translate 0 (-50) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "Space - Shoot"
   , translate 0 (-70) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "P - Pause"
+  , color white $ translate 0 (-110) $ scale 0.2 0.2 $ text "POWER-UPS:"
+  ] ++
+  [ translate 0 y $ color c $ scale 0.15 0.15 $ text t
+  | (y, c, t) <- zip3 [-140, -160, -180, -200]
+                      [green, red, orange, yellow]
+                      [ "Green Health - Restore HP"
+                      , "Red Insta-Kill - One-shot Everything"
+                      , "Orange Nuke - Clear Screen"
+                      , "Yellow Star - Extra Score"
+                      ]
   ]
 
 -- | Render high scores on menu
 renderHighScoresMenu :: [HighScore] -> Picture
-renderHighScoresMenu scores = translate (150) 100 $ pictures $
+renderHighScoresMenu scores = translate (300) 100 $ pictures $
   [ color yellow $ scale 0.2 0.2 $ text "TOP SCORES" ] ++
   [ translate 0 (fromIntegral (-i) * 25 - 30) $ 
     color white $ scale 0.12 0.12 $ 

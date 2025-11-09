@@ -121,8 +121,8 @@ data WaveState = WaveState
 
 -- | Game constants
 screenWidth, screenHeight :: Float
-screenWidth = 800
-screenHeight = 600
+screenWidth = 1024
+screenHeight = 768
 
 playerSpeed :: Float
 playerSpeed = 300.0
