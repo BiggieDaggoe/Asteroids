@@ -9,19 +9,18 @@ view = return . viewPure
 
 -- | Pure rendering function
 viewPure :: GameState -> Picture
-viewPure gstate
-  | gsGameOver gstate = pictures
-      [ renderGame gstate
-      , color red $ translate (-150) 0 $ scale 0.5 0.5 $ text "GAME OVER"
-      , color white $ translate (-200) (-50) $ scale 0.2 0.2 $ text "Press R to Restart"
-      ]
-  | gsPaused gstate = pictures
-      [ renderGame gstate
-      , color (makeColor 0 0 0 0.5) $ rectangleSolid screenWidth screenHeight
-      , color yellow $ translate (-100) 0 $ scale 0.3 0.3 $ text "PAUSED"
-      , color white $ translate (-150) (-50) $ scale 0.2 0.2 $ text "Press P to Resume"
-      ]
-  | otherwise = renderGame gstate
+viewPure gstate = case gsGameMode gstate of
+  Menu -> renderMenu gstate
+  EnteringName -> renderNameEntry gstate
+  GameOverScreen -> renderGameOver gstate
+  Playing
+    | gsPaused gstate -> pictures
+        [ renderGame gstate
+        , color (makeColor 0 0 0 0.5) $ rectangleSolid screenWidth screenHeight
+        , color yellow $ translate (-100) 0 $ scale 0.3 0.3 $ text "PAUSED"
+        , color white $ translate (-150) (-50) $ scale 0.2 0.2 $ text "Press P to Resume"
+        ]
+    | otherwise -> renderGame gstate
 
 -- | Render the active game
 renderGame :: GameState -> Picture
@@ -33,6 +32,75 @@ renderGame gstate = pictures
   , renderAsteroids (gsAsteroids gstate)
   , renderPickups (gsPickups gstate)
   , renderHUD gstate
+  ]
+
+-- | Render main menu
+renderMenu :: GameState -> Picture
+renderMenu gstate = pictures
+  [ renderBackground
+  , color cyan $ translate (-250) 150 $ scale 0.8 0.8 $ text "ASTEROIDS"
+  , color white $ translate (-180) 80 $ scale 0.3 0.3 $ text "Wave Survival"
+  , color yellow $ translate (-220) (-20) $ scale 0.25 0.25 $ text "Press SPACE to Start"
+  , renderControls' 0
+  , renderHighScoresMenu (gsHighScores gstate)
+  ]
+
+-- | Render controls on menu
+renderControls' :: Float -> Picture
+renderControls' yOffset = translate (-150) (yOffset - 100) $ pictures
+  [ color white $ scale 0.2 0.2 $ text "CONTROLS:"
+  , translate 0 (-30) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "Arrow Keys or A/D - Move"
+  , translate 0 (-50) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "Space - Shoot"
+  , translate 0 (-70) $ color (greyN 0.8) $ scale 0.15 0.15 $ text "P - Pause"
+  ]
+
+-- | Render high scores on menu
+renderHighScoresMenu :: [HighScore] -> Picture
+renderHighScoresMenu scores = translate (150) 100 $ pictures $
+  [ color yellow $ scale 0.2 0.2 $ text "TOP SCORES" ] ++
+  [ translate 0 (fromIntegral (-i) * 25 - 30) $ 
+    color white $ scale 0.12 0.12 $ 
+    text $ show (i+1) ++ ". " ++ hsName score ++ " - " ++ show (hsScore score)
+  | (i, score) <- zip [0..] (take 10 scores)
+  ]
+
+-- | Render game over screen
+renderGameOver :: GameState -> Picture
+renderGameOver gstate = pictures
+  [ renderBackground
+  , color red $ translate (-180) 100 $ scale 0.5 0.5 $ text "GAME OVER"
+  , color white $ translate (-100) 40 $ scale 0.3 0.3 $ text $ "Score: " ++ show (gsScore gstate)
+  , color white $ translate (-130) 0 $ scale 0.3 0.3 $ text $ "Wave: " ++ show (waveNumber $ gsWave gstate)
+  , renderGameOverOptions gstate
+  ]
+
+-- | Render game over options
+renderGameOverOptions :: GameState -> Picture
+renderGameOverOptions gstate = translate 0 (-80) $ pictures $
+  if qualifiesForHighScore' (gsScore gstate) (gsHighScores gstate)
+    then [ color green $ translate (-180) 0 $ scale 0.18 0.18 $ text "NEW HIGH SCORE!"
+         , color yellow $ translate (-150) (-30) $ scale 0.15 0.15 $ text "Press S to Save Score"
+         , color white $ translate (-120) (-60) $ scale 0.15 0.15 $ text "Press R to Retry"
+         , color white $ translate (-120) (-80) $ scale 0.15 0.15 $ text "Press M for Menu"
+         ]
+    else [ color white $ translate (-120) 0 $ scale 0.15 0.15 $ text "Press R to Retry"
+         , color white $ translate (-120) (-20) $ scale 0.15 0.15 $ text "Press M for Menu"
+         ]
+
+qualifiesForHighScore' :: Int -> [HighScore] -> Bool
+qualifiesForHighScore' score highScores
+  | length highScores < 10 = True
+  | otherwise = score > minimum (map hsScore highScores)
+
+-- | Render name entry screen
+renderNameEntry :: GameState -> Picture
+renderNameEntry gstate = pictures
+  [ renderBackground
+  , color yellow $ translate (-200) 100 $ scale 0.4 0.4 $ text "ENTER NAME"
+  , color white $ translate (-150) 30 $ scale 0.2 0.2 $ text $ "Score: " ++ show (gsScore gstate)
+  , color cyan $ translate (-100) (-30) $ scale 0.25 0.25 $ text $ gsPlayerName gstate ++ "_"
+  , color white $ translate (-180) (-100) $ scale 0.15 0.15 $ text "Press ENTER to save"
+  , color white $ translate (-200) (-120) $ scale 0.15 0.15 $ text "Press DELETE to delete"
   ]
 
 -- | Render background
@@ -160,7 +228,6 @@ renderHUD gstate = pictures
   , translate (-screenWidth/2 + 20) (screenHeight/2 - 70) $ color white $ scale 0.15 0.15 $ text ("Kills: " ++ show (killsThisWave wave) ++ "/" ++ show (killsRequired wave))
   , translate (-screenWidth/2 + 20) (screenHeight/2 - 90) $ color white $ scale 0.15 0.15 $ text ("Health: " ++ show (pHealth player))
   , renderPowerupIndicators (pPowerups player)
-  , renderControls
   ]
   where
     wave = gsWave gstate
@@ -177,12 +244,3 @@ renderPowerupIndicator idx powerup = translate 0 (fromIntegral idx * (-20)) $ co
     (powerupColor, powerupText) = case apType powerup of
       InstaKill _ -> (red, "INSTA-KILL: " ++ show (round (apRemaining powerup)) ++ "s")
       _ -> (white, "Powerup")
-
--- | Render control instructions
-renderControls :: Picture
-renderControls = translate (-screenWidth/2 + 20) (-screenHeight/2 + 60) $ pictures
-  [ color white $ scale 0.1 0.1 $ text "Controls:"
-  , translate 0 (-15) $ color white $ scale 0.08 0.08 $ text "Arrow Keys - Move"
-  , translate 0 (-25) $ color white $ scale 0.08 0.08 $ text "Space - Shoot"
-  , translate 0 (-35) $ color white $ scale 0.08 0.08 $ text "P - Pause"
-  ]

@@ -1,0 +1,1 @@
+[HighScore {hsName = "taha\b\b\b\b\b\b\b\b\b\b\b", hsScore = 720},HighScore {hsName = "test\b\b", hsScore = 40},HighScore {hsName = "taewf\b\b\b\b\b\baf\b\b", hsScore = 30},HighScore {hsName = "taha", hsScore = 30},HighScore {hsName = "g\b\b\bgbwakudf\b\b\b", hsScore = 30},HighScore {hsName = "mrum\b\b\b\b\b\b", hsScore = 20}]

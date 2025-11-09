@@ -27,7 +27,20 @@ data GameState = GameState
   , gsPaused        :: Bool
   , gsNextId        :: EntityId
   , gsGameOver      :: Bool
+  , gsGameMode      :: GameMode
+  , gsHighScores    :: [HighScore]
+  , gsPlayerName    :: String
   } deriving (Show, Generic)
+
+-- | Game mode state
+data GameMode = Menu | Playing | GameOverScreen | EnteringName
+  deriving (Show, Eq, Generic)
+
+-- | High score entry
+data HighScore = HighScore
+  { hsName  :: String
+  , hsScore :: Int
+  } deriving (Show, Read, Generic)
 
 -- | Player state
 data Player = Player
@@ -156,6 +169,9 @@ initialState = GameState
   , gsPaused = False
   , gsNextId = 1
   , gsGameOver = False
+  , gsGameMode = Menu
+  , gsHighScores = []
+  , gsPlayerName = ""
   }
 
 -- | Input state tracking

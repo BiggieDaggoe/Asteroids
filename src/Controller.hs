@@ -8,8 +8,10 @@ import Data.List (partition)
 -- | Main game step function
 step :: Float -> GameState -> IO GameState
 step secs gstate
+  | gsGameMode gstate == Menu = return gstate
   | gsGameOver gstate = return gstate
-  | gsPaused gstate = return gstate
+  | gsPaused gstate && gsGameMode gstate /= EnteringName = return gstate
+  | gsGameMode gstate == EnteringName = return gstate  -- Still process input in name entry
   | otherwise = return $ updateGame secs gstate
 
 -- | Update all game systems
@@ -343,7 +345,10 @@ updateTimeAndPowerups dt gstate = gstate
 -- | Check if game is over
 checkGameOver :: GameState -> GameState
 checkGameOver gstate
-  | pHealth (gsPlayer gstate) <= 0 = gstate { gsGameOver = True }
+  | pHealth (gsPlayer gstate) <= 0 = gstate 
+      { gsGameOver = True
+      , gsGameMode = GameOverScreen
+      }
   | otherwise = gstate
 
 -- | Spawn random enemy
@@ -444,25 +449,126 @@ enemyScore UFO = 50
 
 -- | Handle user input
 input :: Event -> GameState -> IO GameState
-input event gstate = return $ inputKey event gstate
+input event gstate = case gsGameMode gstate of
+  Menu -> return $ handleMenuInput event gstate
+  -- In EnteringName we need to allow saving which performs IO (writeFile),
+  -- so route events to an IO handler that can call `saveHighScore`.
+  EnteringName -> handleNameInputIO event gstate
+  GameOverScreen -> handleGameOverInput event gstate
+  Playing -> return $ handlePlayingInput event gstate
+  _ -> return gstate
 
-inputKey :: Event -> GameState -> GameState
-inputKey (EventKey (Char 'p') Down _ _) gstate =
-  gstate { gsPaused = not (gsPaused gstate) }
-inputKey (EventKey (Char 'r') Down _ _) gstate
-  | gsGameOver gstate = initialState
-  | otherwise = gstate
-inputKey (EventKey (SpecialKey KeyLeft) Down _ _) gstate =
-  gstate { gsPlayer = (gsPlayer gstate) { pVel = (-playerSpeed, 0) } }
-inputKey (EventKey (SpecialKey KeyLeft) Up _ _) gstate =
-  gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
-inputKey (EventKey (SpecialKey KeyRight) Down _ _) gstate =
-  gstate { gsPlayer = (gsPlayer gstate) { pVel = (playerSpeed, 0) } }
-inputKey (EventKey (SpecialKey KeyRight) Up _ _) gstate =
-  gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
-inputKey (EventKey (SpecialKey KeySpace) Down _ _) gstate =
-  shootBullet gstate
-inputKey _ gstate = gstate
+-- | Handle menu input
+handleMenuInput :: Event -> GameState -> GameState
+handleMenuInput (EventKey (SpecialKey KeySpace) Down _ _) gstate =
+  startNewGame gstate
+handleMenuInput _ gstate = gstate
+
+-- | Start a new game
+startNewGame :: GameState -> GameState
+startNewGame gstate = initialState
+  { gsGameMode = Playing
+  , gsHighScores = gsHighScores gstate
+  }
+
+-- | Handle name entry input (IO-capable)
+handleNameInputIO :: Event -> GameState -> IO GameState
+handleNameInputIO (EventKey key keyState _ _) gstate = 
+    case (key, keyState) of
+        -- Handle Enter key
+        (SpecialKey KeyEnter, Down) ->
+            if not (null (gsPlayerName gstate))
+                then saveHighScore gstate
+                else return $ gstate { gsGameMode = Menu }
+        
+        -- Handle Backspace key (both press and release)
+        (SpecialKey KeyBackspace, _) ->
+            return $ gstate { gsPlayerName = if null (gsPlayerName gstate) 
+                                            then "" 
+                                            else init (gsPlayerName gstate) }
+        
+        -- Handle Delete key (both press and release)
+        (SpecialKey KeyDelete, _) ->
+            return $ gstate { gsPlayerName = if null (gsPlayerName gstate) 
+                                            then "" 
+                                            else init (gsPlayerName gstate) }
+        
+        -- Handle character input (only on key press)
+        (Char c, Down) ->
+            if length (gsPlayerName gstate) < 15
+                then return $ gstate { gsPlayerName = gsPlayerName gstate ++ [c] }
+                else return gstate
+        
+        -- Ignore all other keys
+        _ -> return gstate
+handleNameInputIO _ gstate = return gstate
+
+-- | Handle game over input
+handleGameOverInput :: Event -> GameState -> IO GameState
+handleGameOverInput (EventKey (Char 'r') Down _ _) gstate = do
+  return $ startNewGame gstate
+handleGameOverInput (EventKey (Char 'm') Down _ _) gstate = do
+  return $ gstate { gsGameMode = Menu }
+handleGameOverInput (EventKey (Char 's') Down _ _) gstate = do
+  if qualifiesForHighScore (gsScore gstate) (gsHighScores gstate)
+    then return $ gstate { gsGameMode = EnteringName, gsPlayerName = "" }
+    else return gstate
+handleGameOverInput (EventKey (SpecialKey KeyEnter) Down _ _) gstate = do
+  if not (null (gsPlayerName gstate)) && gsGameMode gstate == EnteringName
+    then saveHighScore gstate
+    else return gstate
+handleGameOverInput _ gstate = return gstate
+
+-- | Handle playing input
+handlePlayingInput :: Event -> GameState -> GameState
+handlePlayingInput (EventKey key keyState _ _) gstate = case (key, keyState) of
+    -- Pause
+    (Char 'p', Down) -> gstate { gsPaused = not (gsPaused gstate) }
+    
+    -- Move left (arrow key or 'A')
+    (SpecialKey KeyLeft, Down) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (-playerSpeed, 0) } }
+    (SpecialKey KeyLeft, Up) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
+    (Char 'a', Down) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (-playerSpeed, 0) } }
+    (Char 'a', Up) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
+    
+    -- Move right (arrow key or 'D')
+    (SpecialKey KeyRight, Down) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (playerSpeed, 0) } }
+    (SpecialKey KeyRight, Up) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
+    (Char 'd', Down) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (playerSpeed, 0) } }
+    (Char 'd', Up) -> gstate { gsPlayer = (gsPlayer gstate) { pVel = (0, 0) } }
+    
+    -- Shoot
+    (SpecialKey KeySpace, Down) -> shootBullet gstate
+    
+    -- Any other key
+    _ -> gstate
+
+-- | Check if score qualifies for top 10
+qualifiesForHighScore :: Int -> [HighScore] -> Bool
+qualifiesForHighScore score highScores
+  | length highScores < 10 = True
+  | otherwise = score > minimum (map hsScore highScores)
+
+-- | Save high score to file
+saveHighScore :: GameState -> IO GameState
+saveHighScore gstate = do
+  let newScore = HighScore (gsPlayerName gstate) (gsScore gstate)
+  let updatedScores = take 10 $ reverse $ sort' $ newScore : gsHighScores gstate
+  writeFile "src/highscores.txt" (show updatedScores)
+  return $ gstate 
+    { gsHighScores = updatedScores
+    , gsGameMode = Menu
+    , gsPlayerName = ""
+    }
+  where
+    sort' = sortBy (\a b -> compare (hsScore a) (hsScore b))
+
+sortBy :: (a -> a -> Ordering) -> [a] -> [a]
+sortBy _ [] = []
+sortBy cmp (x:xs) = sortBy cmp smaller ++ [x] ++ sortBy cmp larger
+  where
+    smaller = filter (\y -> cmp y x == LT) xs
+    larger = filter (\y -> cmp y x /= LT) xs
 
 -- | Shoot a bullet
 shootBullet :: GameState -> GameState
