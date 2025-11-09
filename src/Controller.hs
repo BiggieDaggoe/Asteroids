@@ -3,7 +3,7 @@ module Controller where
 import Model
 import Graphics.Gloss.Interface.IO.Game
 import System.Random
-import Data.List (partition)
+import Data.List (partition, (\\))
 
 -- | Main game step function
 step :: Float -> GameState -> IO GameState
@@ -162,6 +162,28 @@ updateCollisions gstate = gstate
   & handlePlayerPickupCollisions
   & handleEnemyPlayerCollisions
   & handleAsteroidPlayerCollisions
+  & handleEnemyBulletPlayerCollisions  -- Add enemy bullet collision handling
+
+-- | Handle enemy bullet collisions with player
+handleEnemyBulletPlayerCollisions :: GameState -> GameState
+handleEnemyBulletPlayerCollisions gstate = gstate
+  { gsPlayer = newPlayer
+  , gsBullets = survivingBullets
+  }
+  where
+    player = gsPlayer gstate
+    (enemyBullets, otherBullets) = partition isEnemyBullet (gsBullets gstate)
+    (hittingBullets, survivingEnemyBullets) = partition (collidesWithPlayer player) enemyBullets
+    survivingBullets = otherBullets ++ survivingEnemyBullets  -- Keep non-hitting enemy bullets
+    
+    damage = sum [bDamage bullet | bullet <- hittingBullets]
+    newPlayer = player { pHealth = pHealth player - damage }
+    
+    isEnemyBullet bullet = case bOwner bullet of
+      FromEnemy _ -> True
+      _ -> False
+    
+    collidesWithPlayer p bullet = distance (pPos p) (bPos bullet) < 20  -- Bullet hit radius
 
 -- | Bullet-Enemy collisions
 handleBulletEnemyCollisions :: GameState -> GameState
